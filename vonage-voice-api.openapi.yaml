@@ -1,0 +1,1315 @@
+openapi: 3.0.3
+info:
+  title: Vonage Voice API
+  version: 1.0.0
+  description: |
+    Create, inspect and control voice calls, and describe call flows with NCCOs.
+
+    Unofficial spec, written from memory rather than from Vonage's published reference, then
+    corrected against live API responses. Success responses for operations on an active call,
+    and most NCCO option limits, have not been checked against the live API.
+
+    Webhooks are modelled as OpenAPI 3.0 `callbacks` on `POST /calls`. The same answer and
+    event webhooks also fire for inbound calls, using the URLs set on the Vonage application.
+servers:
+  - url: https://api.nexmo.com/v1
+    description: Global (routed automatically)
+  - url: https://api-us.vonage.com/v1
+    description: United States
+  - url: https://api-eu.vonage.com/v1
+    description: Europe
+  - url: https://api-ap.vonage.com/v1
+    description: Asia Pacific
+security:
+  - bearerAuth: []
+tags:
+  - name: Calls
+    description: Create, list, retrieve and modify calls
+  - name: Audio
+    description: Play audio, speech and DTMF into an active call
+paths:
+  /calls:
+    get:
+      tags: [Calls]
+      operationId: listCalls
+      summary: List calls
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/CallStatusFilter'
+        - name: date_start
+          in: query
+          description: Format `yyyy-MM-dd'T'HH:mm:ssXXX`, for example `2026-01-01T00:00:00Z`
+          schema:
+            type: string
+            format: date-time
+        - name: date_end
+          in: query
+          description: Format `yyyy-MM-dd'T'HH:mm:ssXXX`, for example `2026-01-01T00:00:00Z`
+          schema:
+            type: string
+            format: date-time
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+        - name: record_index
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+        - name: conversation_uuid
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A page of calls
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Calls]
+      operationId: createCall
+      summary: Create an outbound call
+      description: Provide exactly one of `ncco` or `answer_url`, and exactly one of `from` or `random_from_number`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCallRequest'
+      responses:
+        '201':
+          description: Call created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateCallResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+      callbacks:
+        answer:
+          '{$request.body#/answer_url/0}':
+            get:
+              operationId: answerWebhook
+              summary: Vonage asks for the NCCO that controls the call
+              parameters:
+                - name: to
+                  in: query
+                  schema:
+                    type: string
+                - name: from
+                  in: query
+                  schema:
+                    type: string
+                - name: from_user
+                  in: query
+                  description: Client SDK user that placed the call
+                  schema:
+                    type: string
+                - name: uuid
+                  in: query
+                  schema:
+                    type: string
+                    format: uuid
+                - name: conversation_uuid
+                  in: query
+                  schema:
+                    type: string
+                - name: region_url
+                  in: query
+                  schema:
+                    type: string
+                    format: uri
+              responses:
+                '200':
+                  description: The NCCO to execute
+                  content:
+                    application/json:
+                      schema:
+                        $ref: '#/components/schemas/Ncco'
+        event:
+          '{$request.body#/event_url/0}':
+            post:
+              operationId: eventWebhook
+              summary: Vonage reports a call event
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      anyOf:
+                        - $ref: '#/components/schemas/CallStatusEvent'
+                        - $ref: '#/components/schemas/RecordingEvent'
+                        - $ref: '#/components/schemas/InputEvent'
+              responses:
+                '200':
+                  description: Event accepted. A synchronous NCCO event may return an NCCO here.
+                  content:
+                    application/json:
+                      schema:
+                        $ref: '#/components/schemas/Ncco'
+                '204':
+                  description: Event accepted
+  /calls/{uuid}:
+    parameters:
+      - $ref: '#/components/parameters/CallUuid'
+    get:
+      tags: [Calls]
+      operationId: getCall
+      summary: Retrieve a call
+      responses:
+        '200':
+          description: The call
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Call'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Calls]
+      operationId: updateCall
+      summary: Modify an active call
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/CallControlAction'
+                - $ref: '#/components/schemas/TransferCallAction'
+      responses:
+        '204':
+          description: Call updated
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /calls/{uuid}/stream:
+    parameters:
+      - $ref: '#/components/parameters/CallUuid'
+    put:
+      tags: [Audio]
+      operationId: startStream
+      summary: Play an audio file into a call
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartStreamRequest'
+      responses:
+        '200':
+          description: Stream started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudioActionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Audio]
+      operationId: stopStream
+      summary: Stop the audio playing into a call
+      responses:
+        '200':
+          description: Stream stopped
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudioActionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /calls/{uuid}/talk:
+    parameters:
+      - $ref: '#/components/parameters/CallUuid'
+    put:
+      tags: [Audio]
+      operationId: startTalk
+      summary: Speak synthesised text into a call
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartTalkRequest'
+      responses:
+        '200':
+          description: Talk started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudioActionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Audio]
+      operationId: stopTalk
+      summary: Stop the speech playing into a call
+      responses:
+        '200':
+          description: Talk stopped
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudioActionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /calls/{uuid}/dtmf:
+    parameters:
+      - $ref: '#/components/parameters/CallUuid'
+    put:
+      tags: [Audio]
+      operationId: sendDtmf
+      summary: Send DTMF tones into a call
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendDtmfRequest'
+      responses:
+        '200':
+          description: DTMF sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudioActionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /calls/{uuid}/input/dtmf:
+    parameters:
+      - $ref: '#/components/parameters/CallUuid'
+    put:
+      tags: [Audio]
+      operationId: subscribeToDtmf
+      summary: Subscribe to DTMF input outside an input action
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventUrl]
+              properties:
+                eventUrl:
+                  type: array
+                  minItems: 1
+                  maxItems: 1
+                  items:
+                    type: string
+                    format: uri
+      responses:
+        '200':
+          description: Subscribed
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    delete:
+      tags: [Audio]
+      operationId: unsubscribeFromDtmf
+      summary: Stop the DTMF subscription
+      responses:
+        '200':
+          description: Unsubscribed
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        RS256 JWT signed with the Vonage application's private key.
+        Claims: `application_id`, `iat`, `exp` and `jti`.
+  parameters:
+    CallUuid:
+      name: uuid
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    BadRequest:
+      description: The request was invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationError'
+    Unauthorized:
+      description: The JWT is missing, invalid or expired
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PaymentRequired:
+      description: The account has insufficient credit
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: No call has this UUID
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalServerError:
+      description: Vonage returns this when the call UUID on a DTMF subscription does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooManyRequests:
+      description: The rate limit was exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      required: [type, error_title]
+      properties:
+        type:
+          type: string
+          example: NOT_FOUND
+        error_title:
+          type: string
+          example: Not Found
+    ValidationError:
+      type: object
+      required: [type, title]
+      properties:
+        type:
+          type: integer
+          example: 400
+        title:
+          type: string
+          example: Bad Request
+        invalid_parameters:
+          type: array
+          items:
+            type: object
+            required: [name, reason]
+            properties:
+              name:
+                type: string
+              reason:
+                type: string
+    CallStatusFilter:
+      type: string
+      description: The statuses `GET /calls` accepts, which are fewer than a call can report
+      enum:
+        - answered
+        - completed
+        - started
+        - ringing
+        - busy
+        - cancelled
+        - failed
+        - timeout
+        - machine
+    CallStatus:
+      type: string
+      enum:
+        - started
+        - ringing
+        - answered
+        - machine
+        - human
+        - completed
+        - busy
+        - cancelled
+        - failed
+        - rejected
+        - timeout
+        - unanswered
+    CallDirection:
+      type: string
+      enum: [outbound, inbound]
+    HttpMethod:
+      type: string
+      enum: [GET, POST]
+    HalLink:
+      type: object
+      properties:
+        href:
+          type: string
+    Call:
+      type: object
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        conversation_uuid:
+          type: string
+        to:
+          $ref: '#/components/schemas/CallParty'
+        from:
+          $ref: '#/components/schemas/CallParty'
+        status:
+          $ref: '#/components/schemas/CallStatus'
+        direction:
+          $ref: '#/components/schemas/CallDirection'
+        rate:
+          type: string
+        price:
+          type: string
+        duration:
+          type: string
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        network:
+          type: string
+        _links:
+          type: object
+          properties:
+            self:
+              $ref: '#/components/schemas/HalLink'
+    CallParty:
+      type: object
+      properties:
+        type:
+          type: string
+        number:
+          type: string
+    CallList:
+      type: object
+      properties:
+        count:
+          type: integer
+        page_size:
+          type: integer
+        record_index:
+          type: integer
+        _links:
+          type: object
+          properties:
+            self:
+              $ref: '#/components/schemas/HalLink'
+            first:
+              $ref: '#/components/schemas/HalLink'
+            last:
+              $ref: '#/components/schemas/HalLink'
+            next:
+              $ref: '#/components/schemas/HalLink'
+            prev:
+              $ref: '#/components/schemas/HalLink'
+        _embedded:
+          type: object
+          properties:
+            calls:
+              type: array
+              items:
+                $ref: '#/components/schemas/Call'
+    CreateCallRequest:
+      type: object
+      required: [to]
+      properties:
+        to:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            $ref: '#/components/schemas/CallEndpoint'
+        from:
+          $ref: '#/components/schemas/PhoneNumberEndpoint'
+        random_from_number:
+          type: boolean
+          description: Use a random number linked to the application as the caller ID
+        ncco:
+          $ref: '#/components/schemas/Ncco'
+        answer_url:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: string
+            format: uri
+        answer_method:
+          allOf:
+            - $ref: '#/components/schemas/HttpMethod'
+          default: GET
+        event_url:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: string
+            format: uri
+        event_method:
+          allOf:
+            - $ref: '#/components/schemas/HttpMethod'
+          default: POST
+        machine_detection:
+          $ref: '#/components/schemas/MachineDetection'
+        advanced_machine_detection:
+          $ref: '#/components/schemas/AdvancedMachineDetection'
+        length_timer:
+          type: integer
+          minimum: 0
+          maximum: 86400
+          default: 7200
+        ringing_timer:
+          type: integer
+          minimum: 0
+          maximum: 120
+          default: 60
+    CreateCallResponse:
+      type: object
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/CallStatus'
+        direction:
+          $ref: '#/components/schemas/CallDirection'
+        conversation_uuid:
+          type: string
+    MachineDetection:
+      type: string
+      enum: [continue, hangup]
+    AdvancedMachineDetection:
+      type: object
+      properties:
+        behavior:
+          $ref: '#/components/schemas/MachineDetection'
+        mode:
+          type: string
+          enum: [default, detect, detect_beep]
+          default: detect
+        beep_timeout:
+          type: integer
+          minimum: 30
+          maximum: 120
+          default: 45
+    PhoneNumberEndpoint:
+      type: object
+      required: [type, number]
+      properties:
+        type:
+          type: string
+          enum: [phone]
+        number:
+          type: string
+          description: Up to 15 digits, optionally prefixed with a plus
+          pattern: '^\+?\d{1,15}$'
+    CallEndpoint:
+      oneOf:
+        - $ref: '#/components/schemas/CallPhoneEndpoint'
+        - $ref: '#/components/schemas/AppEndpoint'
+        - $ref: '#/components/schemas/WebsocketEndpoint'
+        - $ref: '#/components/schemas/SipEndpoint'
+        - $ref: '#/components/schemas/VbcEndpoint'
+      discriminator:
+        propertyName: type
+        mapping:
+          phone: '#/components/schemas/CallPhoneEndpoint'
+          app: '#/components/schemas/AppEndpoint'
+          websocket: '#/components/schemas/WebsocketEndpoint'
+          sip: '#/components/schemas/SipEndpoint'
+          vbc: '#/components/schemas/VbcEndpoint'
+    CallPhoneEndpoint:
+      type: object
+      required: [type, number]
+      properties:
+        type:
+          type: string
+          enum: [phone]
+        number:
+          type: string
+          pattern: '^\+?\d{1,15}$'
+        dtmf_answer:
+          type: string
+          description: Digits to send when the call is answered
+          pattern: '^[0-9*#p]+$'
+    NccoPhoneEndpoint:
+      type: object
+      required: [type, number]
+      properties:
+        type:
+          type: string
+          enum: [phone]
+        number:
+          type: string
+          pattern: '^\+?\d{1,15}$'
+        dtmfAnswer:
+          type: string
+          description: Digits to send when the call is answered
+          pattern: '^[0-9*#p]+$'
+        onAnswer:
+          type: object
+          required: [url]
+          properties:
+            url:
+              type: string
+              format: uri
+            ringbackTone:
+              type: string
+              format: uri
+    AppEndpoint:
+      type: object
+      required: [type, user]
+      properties:
+        type:
+          type: string
+          enum: [app]
+        user:
+          type: string
+    WebsocketEndpoint:
+      type: object
+      required: [type, uri, content-type]
+      properties:
+        type:
+          type: string
+          enum: [websocket]
+        uri:
+          type: string
+          format: uri
+        content-type:
+          type: string
+          enum: [audio/l16;rate=8000, audio/l16;rate=16000, audio/l16;rate=24000]
+        headers:
+          type: object
+          additionalProperties: true
+    SipEndpoint:
+      type: object
+      required: [type, uri]
+      properties:
+        type:
+          type: string
+          enum: [sip]
+        uri:
+          type: string
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+        standardHeaders:
+          type: object
+          properties:
+            User-to-User:
+              type: string
+    VbcEndpoint:
+      type: object
+      required: [type, extension]
+      properties:
+        type:
+          type: string
+          enum: [vbc]
+        extension:
+          type: string
+    CallControlAction:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [hangup, mute, unmute, earmuff, unearmuff]
+    TransferCallAction:
+      type: object
+      required: [action, destination]
+      properties:
+        action:
+          type: string
+          enum: [transfer]
+        destination:
+          type: object
+          required: [type]
+          description: Provide exactly one of `ncco` or `url`.
+          properties:
+            type:
+              type: string
+              enum: [ncco]
+            ncco:
+              $ref: '#/components/schemas/Ncco'
+            url:
+              type: array
+              minItems: 1
+              maxItems: 1
+              items:
+                type: string
+                format: uri
+    StartStreamRequest:
+      type: object
+      required: [stream_url]
+      properties:
+        stream_url:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: string
+            format: uri
+        loop:
+          type: integer
+          minimum: 0
+          default: 1
+          description: Times to repeat. Zero loops until the call ends.
+        level:
+          type: number
+          minimum: -1
+          maximum: 1
+          default: 0
+    StartTalkRequest:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          maxLength: 1500
+        language:
+          type: string
+          default: en-US
+          description: BCP-47 language code
+        style:
+          type: integer
+          minimum: 0
+          default: 0
+        premium:
+          type: boolean
+          default: false
+        loop:
+          type: integer
+          minimum: 0
+          default: 1
+        level:
+          type: number
+          minimum: -1
+          maximum: 1
+          default: 0
+    SendDtmfRequest:
+      type: object
+      required: [digits]
+      properties:
+        digits:
+          type: string
+          pattern: '^[0-9*#p]+$'
+    AudioActionResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        uuid:
+          type: string
+          format: uuid
+    Ncco:
+      type: array
+      description: The ordered actions that control a call
+      items:
+        $ref: '#/components/schemas/NccoAction'
+    NccoAction:
+      oneOf:
+        - $ref: '#/components/schemas/RecordAction'
+        - $ref: '#/components/schemas/ConversationAction'
+        - $ref: '#/components/schemas/ConnectAction'
+        - $ref: '#/components/schemas/TalkAction'
+        - $ref: '#/components/schemas/StreamAction'
+        - $ref: '#/components/schemas/InputAction'
+        - $ref: '#/components/schemas/NotifyAction'
+        - $ref: '#/components/schemas/WaitAction'
+        - $ref: '#/components/schemas/TransferAction'
+      discriminator:
+        propertyName: action
+        mapping:
+          record: '#/components/schemas/RecordAction'
+          conversation: '#/components/schemas/ConversationAction'
+          connect: '#/components/schemas/ConnectAction'
+          talk: '#/components/schemas/TalkAction'
+          stream: '#/components/schemas/StreamAction'
+          input: '#/components/schemas/InputAction'
+          notify: '#/components/schemas/NotifyAction'
+          wait: '#/components/schemas/WaitAction'
+          transfer: '#/components/schemas/TransferAction'
+    Transcription:
+      type: object
+      properties:
+        language:
+          type: string
+          default: en-US
+        eventUrl:
+          type: array
+          items:
+            type: string
+            format: uri
+        eventMethod:
+          $ref: '#/components/schemas/HttpMethod'
+        sentimentAnalysis:
+          type: boolean
+          default: false
+    RecordAction:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [record]
+        format:
+          type: string
+          enum: [mp3, wav, ogg]
+          default: mp3
+        split:
+          type: string
+          enum: [conversation]
+        channels:
+          type: integer
+          minimum: 1
+          maximum: 32
+        endOnSilence:
+          type: integer
+          minimum: 3
+          maximum: 10
+        endOnKey:
+          type: string
+          pattern: '^[0-9*#]$'
+        timeOut:
+          type: integer
+          minimum: 3
+          maximum: 7200
+          default: 7200
+        beepStart:
+          type: boolean
+          default: false
+        eventUrl:
+          type: array
+          items:
+            type: string
+            format: uri
+        eventMethod:
+          $ref: '#/components/schemas/HttpMethod'
+        transcription:
+          $ref: '#/components/schemas/Transcription'
+    ConversationAction:
+      type: object
+      required: [action, name]
+      properties:
+        action:
+          type: string
+          enum: [conversation]
+        name:
+          type: string
+        musicOnHoldUrl:
+          type: array
+          items:
+            type: string
+            format: uri
+        startOnEnter:
+          type: boolean
+          default: true
+        endOnExit:
+          type: boolean
+          default: false
+        record:
+          type: boolean
+          default: false
+        canSpeak:
+          type: array
+          items:
+            type: string
+        canHear:
+          type: array
+          items:
+            type: string
+        mute:
+          type: boolean
+          default: false
+        transcription:
+          $ref: '#/components/schemas/Transcription'
+    ConnectAction:
+      type: object
+      required: [action, endpoint]
+      properties:
+        action:
+          type: string
+          enum: [connect]
+        endpoint:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            $ref: '#/components/schemas/NccoEndpoint'
+        from:
+          type: string
+        randomFromNumber:
+          type: boolean
+        eventType:
+          type: string
+          enum: [synchronous]
+        timeout:
+          type: integer
+          minimum: 1
+          maximum: 120
+          default: 60
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 7200
+          default: 7200
+        machineDetection:
+          $ref: '#/components/schemas/MachineDetection'
+        advancedMachineDetection:
+          $ref: '#/components/schemas/AdvancedMachineDetection'
+        eventUrl:
+          type: array
+          items:
+            type: string
+            format: uri
+        eventMethod:
+          $ref: '#/components/schemas/HttpMethod'
+        ringbackTone:
+          type: string
+          format: uri
+    NccoEndpoint:
+      oneOf:
+        - $ref: '#/components/schemas/NccoPhoneEndpoint'
+        - $ref: '#/components/schemas/AppEndpoint'
+        - $ref: '#/components/schemas/WebsocketEndpoint'
+        - $ref: '#/components/schemas/SipEndpoint'
+        - $ref: '#/components/schemas/VbcEndpoint'
+      discriminator:
+        propertyName: type
+        mapping:
+          phone: '#/components/schemas/NccoPhoneEndpoint'
+          app: '#/components/schemas/AppEndpoint'
+          websocket: '#/components/schemas/WebsocketEndpoint'
+          sip: '#/components/schemas/SipEndpoint'
+          vbc: '#/components/schemas/VbcEndpoint'
+    TalkAction:
+      type: object
+      required: [action, text]
+      properties:
+        action:
+          type: string
+          enum: [talk]
+        text:
+          type: string
+          maxLength: 1500
+        bargeIn:
+          type: boolean
+          default: false
+        loop:
+          type: integer
+          minimum: 0
+          default: 1
+        level:
+          type: number
+          minimum: -1
+          maximum: 1
+          default: 0
+        language:
+          type: string
+          default: en-US
+        style:
+          type: integer
+          minimum: 0
+          default: 0
+        premium:
+          type: boolean
+          default: false
+    StreamAction:
+      type: object
+      required: [action, streamUrl]
+      properties:
+        action:
+          type: string
+          enum: [stream]
+        streamUrl:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: string
+            format: uri
+        level:
+          type: number
+          minimum: -1
+          maximum: 1
+          default: 0
+        bargeIn:
+          type: boolean
+          default: false
+        loop:
+          type: integer
+          minimum: 0
+          default: 1
+    InputAction:
+      type: object
+      required: [action, type]
+      properties:
+        action:
+          type: string
+          enum: [input]
+        type:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [dtmf, speech]
+        dtmf:
+          type: object
+          properties:
+            timeOut:
+              type: integer
+              minimum: 0
+              maximum: 10
+              default: 3
+            maxDigits:
+              type: integer
+              minimum: 1
+              maximum: 20
+              default: 4
+            submitOnHash:
+              type: boolean
+              default: false
+        speech:
+          type: object
+          properties:
+            uuid:
+              type: array
+              items:
+                type: string
+                format: uuid
+            endOnSilence:
+              type: number
+              minimum: 0.4
+              maximum: 10
+              default: 2
+            language:
+              type: string
+              default: en-US
+            context:
+              type: array
+              items:
+                type: string
+            startTimeout:
+              type: integer
+              minimum: 1
+              maximum: 60
+              default: 10
+            maxDuration:
+              type: integer
+              minimum: 1
+              maximum: 60
+              default: 60
+            saveAudio:
+              type: boolean
+              default: false
+            sensitivity:
+              type: integer
+              minimum: 0
+              maximum: 100
+        eventUrl:
+          type: array
+          items:
+            type: string
+            format: uri
+        eventMethod:
+          $ref: '#/components/schemas/HttpMethod'
+    NotifyAction:
+      type: object
+      required: [action, payload, eventUrl]
+      properties:
+        action:
+          type: string
+          enum: [notify]
+        payload:
+          type: object
+          additionalProperties: true
+        eventUrl:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: string
+            format: uri
+        eventMethod:
+          $ref: '#/components/schemas/HttpMethod'
+    WaitAction:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [wait]
+        timeout:
+          type: number
+          minimum: 0.1
+          maximum: 7200
+          default: 10
+    TransferAction:
+      type: object
+      required: [action, conversationId]
+      properties:
+        action:
+          type: string
+          enum: [transfer]
+        conversationId:
+          type: string
+        canHear:
+          type: array
+          items:
+            type: string
+        canSpeak:
+          type: array
+          items:
+            type: string
+        mute:
+          type: boolean
+    CallStatusEvent:
+      type: object
+      required: [status, uuid]
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        uuid:
+          type: string
+          format: uuid
+        conversation_uuid:
+          type: string
+        status:
+          $ref: '#/components/schemas/CallStatus'
+        direction:
+          $ref: '#/components/schemas/CallDirection'
+        timestamp:
+          type: string
+          format: date-time
+        detail:
+          type: string
+          description: Why the call reached this status
+        rate:
+          type: string
+        price:
+          type: string
+        duration:
+          type: string
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        network:
+          type: string
+    RecordingEvent:
+      type: object
+      required: [recording_url, recording_uuid]
+      properties:
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        recording_url:
+          type: string
+          format: uri
+        size:
+          type: integer
+        recording_uuid:
+          type: string
+          format: uuid
+        conversation_uuid:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+    InputEvent:
+      type: object
+      required: [uuid]
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        uuid:
+          type: string
+          format: uuid
+        conversation_uuid:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        dtmf:
+          type: object
+          properties:
+            digits:
+              type: string
+            timed_out:
+              type: boolean
+        speech:
+          type: object
+          properties:
+            timeout_reason:
+              type: string
+              enum: [end_on_silence_timeout, max_duration, start_timeout]
+            results:
+              type: array
+              items:
+                type: object
+                properties:
+                  text:
+                    type: string
+                  confidence:
+                    type: string
+            recording_url:
+              type: string
+              format: uri
+            error:
+              type: string
